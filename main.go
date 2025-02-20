@@ -3,55 +3,42 @@ package main
 import (
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
-	"github.com/hashicorp/raft"
+	"github.com/myself659/grokdb/storage"
 )
 
-// StorageNode 表示存储节点
-type StorageNode struct {
-	ID       string
-	Data     map[string]string // 模拟存储
-	Raft     *raft.Raft        // 分布式一致性
-	mu       sync.Mutex
-}
-
-// NewStorageNode 创建存储节点
-func NewStorageNode(id string) *StorageNode {
-	return &StorageNode{
-		ID:   id,
-		Data: make(map[string]string),
-	}
-}
-
-// WriteLog 写入日志并复制
-func (n *StorageNode) WriteLog(key, value string) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	// 模拟日志写入
-	logEntry := fmt.Sprintf("SET %s %s", key, value)
-	if n.Raft != nil {
-		// 通过 Raft 复制到其他节点
-		future := n.Raft.Apply([]byte(logEntry), 5*time.Second)
-		if err := future.Error(); err != nil {
-			return err
+func main() {
+	// 创建 3 个节点，模拟 3 个 AZ
+	nodes := make([]*storage.StorageNode, 3)
+	ports := []string{"19001", "19002", "19003"}
+	for i, port := range ports {
+		peers := []string{}
+		for j, p := range ports {
+			if j != i {
+				peers = append(peers, "localhost:"+p)
+			}
+		}
+		nodes[i] = storage.NewStorageNode(fmt.Sprintf("node%d", i+1), peers)
+		err := nodes[i].SetupRaft(fmt.Sprintf("raft%d", i+1), "localhost:"+port)
+		if err != nil {
+			log.Fatalf("Setup Raft failed for node%d: %v", i+1, err)
 		}
 	}
 
-	// 本地存储
-	n.Data[key] = value
-	log.Printf("Node %s: %s = %s", n.ID, key, value)
-	return nil
-}
+	// 等待 Raft 选举完成
+	time.Sleep(5 * time.Second)
 
-func main() {
-	node := NewStorageNode("node1")
-	// 这里省略 Raft 初始化，实际需要配置多节点
-	err := node.WriteLog("user_id", "12345")
+	// 写入数据到 leader 节点（这里假设 node1 是 leader）
+	err := nodes[0].Write("user_id", "12345")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Write failed: %v", err)
 	}
-	fmt.Println(node.Data)
+
+	// 检查其他节点是否同步
+	time.Sleep(1 * time.Second)
+	for i, node := range nodes {
+		value, exists := node.Read("user_id")
+		log.Printf("Node %d: user_id = %s, exists = %v", i+1, value, exists)
+	}
 }
