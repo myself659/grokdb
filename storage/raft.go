@@ -71,9 +71,13 @@ type FSM struct {
 func (f *FSM) Apply(log *raft.Log) interface{} {
 	entry := string(log.Data)
 	var key, value string
-	fmt.Sscanf(entry, "SET %s %s", &key, &value)
-	f.node.Data[key] = value
-	fmt.Printf("FSM applied: %s = %s", key, value)
+	if _, err := fmt.Sscanf(entry, "SET %s %s", &key, &value); err == nil {
+		f.node.mu.Lock()
+		f.node.Data[key] = value
+		f.node.mu.Unlock()
+		// raft.log?
+		fmt.Printf("FSM applied: %s = %s on node %s", key, value, f.node.ID)
+	}
 	return nil
 }
 

@@ -19,14 +19,31 @@ type StorageNode struct {
 	peers []string // 其他节点地址
 }
 
-// NewStorageNode 创建新节点
+// NewStorageNode 创建并初始化节点
 func NewStorageNode(id string, peers []string) *StorageNode {
-	return &StorageNode{
+	node := &StorageNode{
 		ID:    id,
 		Data:  make(map[string]string),
 		WAL:   NewWAL(fmt.Sprintf("wal-%s.log", id)),
 		peers: peers,
 	}
+
+	// 重放 WAL 恢复状态
+	err := node.RestoreFromWAL()
+	if err != nil {
+		log.Printf("Failed to restore from WAL for node %s: %v", id, err)
+	}
+	return node
+}
+
+// RestoreFromWAL 重放 WAL 日志恢复数据
+func (n *StorageNode) RestoreFromWAL() error {
+	return n.WAL.Replay(func(key, value string) {
+		n.mu.Lock()
+		n.Data[key] = value
+		n.mu.Unlock()
+		log.Printf("Restored: %s = %s on node %s", key, value, n.ID)
+	})
 }
 
 // Write 写入数据
@@ -34,15 +51,11 @@ func (n *StorageNode) Write(key, value string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// 构造日志条目
 	logEntry := fmt.Sprintf("SET %s %s", key, value)
-
-	// 写入本地 WAL
 	if err := n.WAL.Write(logEntry); err != nil {
 		return err
 	}
 
-	// 如果是 Raft leader，同步到其他节点
 	if n.Raft != nil && n.Raft.State() == raft.Leader {
 		future := n.Raft.Apply([]byte(logEntry), 5*time.Second)
 		if err := future.Error(); err != nil {
@@ -50,7 +63,6 @@ func (n *StorageNode) Write(key, value string) error {
 		}
 	}
 
-	// 更新本地数据
 	n.Data[key] = value
 	log.Printf("Node %s: %s = %s", n.ID, key, value)
 	return nil
